@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Squeaky — one-click text cleaner</title>
+<style>
+  :root {
+    --bg: #12100e;
+    --panel: #1c1917;
+    --line: #2f2a26;
+    --ink: #f5f1ea;
+    --muted: #a8a09a;
+    --accent: #ffb020;
+    --accent-ink: #241a06;
+    --ok: #7ad48b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 15% -10%, #241f1b 0%, var(--bg) 60%);
+    color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 28px 20px 40px;
+  }
+  main { width: 100%; max-width: 880px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 10px; }
+  button {
+    font: inherit;
+    font-size: 13.5px;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 8px 13px;
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease, transform .06s ease;
+  }
+  button:hover { background: #262120; border-color: #3d3630; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.primary:hover { background: #ffc045; }
+  button:disabled { opacity: .45; cursor: default; transform: none; }
+  textarea {
+    width: 100%;
+    min-height: 46vh;
+    resize: vertical;
+    font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 16px;
+    outline: none;
+  }
+  textarea:focus { border-color: #55483a; box-shadow: 0 0 0 3px rgba(255,176,32,.12); }
+  .stats {
+    display: flex; flex-wrap: wrap; gap: 18px;
+    margin-top: 10px; padding: 10px 2px 0;
+    border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .stats b { color: var(--ink); font-weight: 600; }
+  #toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 20px);
+    background: var(--ok); color: #0e2213; font-size: 13px; font-weight: 600;
+    padding: 9px 16px; border-radius: 99px; opacity: 0; pointer-events: none;
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Squeaky<span>.</span></h1>
+    <p>Paste messy text. One click. Clean text out.</p>
+  </header>
+
+  <div class="toolbar">
+    <button class="primary" data-act="clean">Clean text</button>
+    <button data-act="bullets">→ Markdown list</button>
+    <button data-act="emails">Grab emails</button>
+    <button data-act="urls">Grab links</button>
+    <button data-act="copy">Copy</button>
+    <button data-act="undo" disabled>Undo</button>
+    <button data-act="clear">Clear</button>
+  </div>
+
+  <textarea id="pad" spellcheck="false" placeholder="Paste PDF copy, a forwarded email, or a log dump here…"></textarea>
+
+  <div class="stats">
+    <span><b id="s-words">0</b> words</span>
+    <span><b id="s-chars">0</b> chars</span>
+    <span><b id="s-lines">0</b> lines</span>
+    <span><b id="s-read">0s</b> read</span>
+  </div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script id="core">
+/* CORE:START — pure functions, no DOM (see test.mjs) */
+const SMART = {
+  "\u2018": "'", "\u2019": "'", "\u201A": "'", "\u201C": '"', "\u201D": '"',
+  "\u2013": "-", "\u2014": "-", "\u2212": "-", "\u2026": "...", "\u00A0": " ",
+  "\u200B": "", "\uFEFF": "", "\u00AD": ""
+};
+
+// Collapse hard-wrapped PDF/email text back into readable paragraphs.
+function stripFormatting(input) {
+  let t = String(input || "").normalize("NFC");
+  t = t.replace(/[\u2018\u2019\u201A\u201C\u201D\u2013\u2014\u2212\u2026\u00A0\u200B\uFEFF\u00AD]/g, (ch) => SMART[ch]);
+  t = t.replace(/\r\n?/g, "\n");
+  // "exam-\nple" -> "example"
+  t = t.replace(/([A-Za-z])-[ \t]*\n[ \t]*([a-z])/g, "$1$2");
+  // join wrapped lines, but keep blank lines and list/heading starts
+  t = t.replace(
+    /([^\n])[ \t]*\n(?![ \t]*\n)(?![ \t]*(?:[-*+\u2022\u00B7\u25AA\u25E6>]|\d+[.)])[ \t])/g,
+    "$1 "
+  );
+  t = t.replace(/[ \t]+/g, " ");
+  t = t.replace(/[ \t]*\n[ \t]*/g, "\n");
+  t = t.replace(/\n{3,}/g, "\n\n");
+  return t.trim();
+}
+
+// Normalise bullets/numbered lists into Markdown.
+function toMarkdownList(input) {
+  const cleaned = stripFormatting(input);
+  if (!cleaned) return "";
+  return cleaned
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/^[ \t]*(?:[\u2022\u00B7\u25AA\u25E6*+-])[ \t]+(.*)$/);
+      if (m) return "- " + m[1].trim();
+      const n = line.match(/^[ \t]*(\d+)[.)][ \t]+(.*)$/);
+      if (n) return n[1] + ". " + n[2].trim();
+      return line.trim();
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function uniq(list) {
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    const key = item.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push(item); }
+  }
+  return out;
+}
+
+function extractEmails(input) {
+  const found = String(input || "").match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g) || [];
+  return uniq(found.map((e) => e.replace(/[.,;:]+$/, "")));
+}
+
+function extractUrls(input) {
+  const found = String(input || "").match(/(?:https?:\/\/|www\.)[^\s<>"'`)\]]+/g) || [];
+  return uniq(found.map((u) => u.replace(/[.,;:!?]+$/, "")));
+}
+
+function textStats(input) {
+  const text = String(input || "");
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const minutes = words / 230;
+  const seconds = Math.round(minutes * 60);
+  return {
+    words,
+    chars: text.length,
+    lines: text ? text.split("\n").length : 0,
+    readLabel: seconds < 60 ? seconds + "s" : Math.round(minutes) + "m"
+  };
+}
+/* CORE:END */
+</script>
+
+<script>
+const pad = document.getElementById("pad");
+const toastEl = document.getElementById("toast");
+const undoBtn = document.querySelector('[data-act="undo"]');
+const history = [];
+let lastTyped = 0;
+
+function stat() {
+  const s = textStats(pad.value);
+  document.getElementById("s-words").textContent = s.words;
+  document.getElementById("s-chars").textContent = s.chars;
+  document.getElementById("s-lines").textContent = s.lines;
+  document.getElementById("s-read").textContent = s.readLabel;
+}
+
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toastEl.classList.remove("show"), 1600);
+}
+
+function remember() {
+  history.push(pad.value);
+  if (history.length > 20) history.shift();
+  undoBtn.disabled = history.length === 0;
+}
+
+function replace(text, msg) {
+  remember();
+  pad.value = text;
+  stat();
+  toast(msg);
+}
+
+const actions = {
+  clean: () => replace(stripFormatting(pad.value), "Whitespace, smart quotes and wrap fixed"),
+  bullets: () => replace(toMarkdownList(pad.value), "Lists converted to Markdown"),
+  emails: () => {
+    const list = extractEmails(pad.value);
+    if (!list.length) return toast("No email addresses found");
+    replace(list.join("\n"), list.length + " email" + (list.length > 1 ? "s" : ""));
+  },
+  urls: () => {
+    const list = extractUrls(pad.value);
+    if (!list.length) return toast("No links found");
+    replace(list.join("\n"), list.length + " link" + (list.length > 1 ? "s" : ""));
+  },
+  copy: async () => {
+    if (!pad.value) return toast("Nothing to copy");
+    try {
+      await navigator.clipboard.writeText(pad.value);
+      toast("Copied to clipboard");
+    } catch {
+      pad.select();
+      document.execCommand("copy");
+      toast("Copied (fallback)");
+    }
+  },
+  undo: () => {
+    if (!history.length) return;
+    pad.value = history.pop();
+    undoBtn.disabled = history.length === 0;
+    stat();
+    toast("Undone");
+  },
+  clear: () => {
+    if (!pad.value) return;
+    replace("", "Cleared — use Undo to bring it back");
+  }
+};
+
+document.querySelector(".toolbar").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (btn && actions[btn.dataset.act]) actions[btn.dataset.act]();
+});
+
+// Coalesce typing into a single undo step.
+pad.addEventListener("input", () => {
+  const now = Date.now();
+  if (now - lastTyped > 700) remember();
+  lastTyped = now;
+  stat();
+});
+
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); actions.clean(); }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !pad.value) actions.undo();
+});
+
+document.getElementById("pad").focus();
+stat();
+</script>
+</body>
+</html>
